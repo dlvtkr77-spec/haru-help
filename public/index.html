@@ -1,0 +1,354 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>하루 도움 · 로그인</title>
+  <script async src="https://www.googletagmanager.com/gtag/js?id=G-N2SBF7ZYVL"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag() { dataLayer.push(arguments); }
+    gtag('js', new Date());
+    gtag('config', 'G-N2SBF7ZYVL');
+  </script>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #f3f6f4; color: #203b30; font-family: system-ui, sans-serif; }
+    main { max-width: 840px; margin: 56px auto; padding: 24px; }
+    header, section { background: white; border: 1px solid #dce5df; border-radius: 16px; padding: 24px; }
+    header { margin-bottom: 20px; }
+    h1 { margin: 0 0 12px; font-size: 28px; }
+    h2 { margin: 0 0 20px; font-size: 20px; }
+    .forms { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    label { display: block; margin-bottom: 16px; font-size: 14px; font-weight: 600; }
+    input { display: block; width: 100%; margin-top: 8px; padding: 12px; border: 1px solid #aebfb5; border-radius: 8px; font: inherit; }
+    button { padding: 12px 18px; border: 0; border-radius: 8px; background: #24674c; color: white; font: inherit; font-weight: 600; cursor: pointer; }
+    form button, #google { width: 100%; }
+    button:disabled { opacity: .5; cursor: default; }
+    input:focus-visible, button:focus-visible { outline: 3px solid #94bfa7; outline-offset: 3px; }
+    .actions { display: flex; gap: 12px; margin-top: 20px; }
+    #google { background: white; color: #203b30; border: 1px solid #aebfb5; }
+    #logout { flex-shrink: 0; }
+    #status { min-height: 24px; overflow-wrap: anywhere; }
+    #status[data-error="true"] { color: #b32525; }
+    #consultation { margin-top: 20px; }
+    #question-status[data-error="true"] { color: #b32525; }
+    #question-list { padding-left: 24px; }
+    #question-list li { margin-top: 20px; overflow-wrap: anywhere; }
+    #question-list p { white-space: pre-wrap; }
+    #question-list p[data-error="true"] { color: #b32525; }
+    @media (max-width: 600px) { main { margin: 16px auto; padding: 16px; } .forms { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>하루 도움</h1>
+      <p id="user" aria-live="polite">로그인 상태 확인 중…</p>
+      <p id="status" role="status" aria-live="polite">Firebase 연결 중…</p>
+    </header>
+    <div class="forms">
+      <section>
+        <h2>이메일 가입</h2>
+        <form id="signup">
+          <label>이름<input id="signup-name" name="name" autocomplete="name" required></label>
+          <label>이메일<input name="email" type="email" autocomplete="email" required></label>
+          <label>비밀번호<input name="password" type="password" autocomplete="new-password" minlength="6" required></label>
+          <button type="submit" disabled>가입</button>
+        </form>
+      </section>
+      <section>
+        <h2>이메일 로그인</h2>
+        <form id="login">
+          <label>이메일<input name="email" type="email" autocomplete="email" required></label>
+          <label>비밀번호<input name="password" type="password" autocomplete="current-password" required></label>
+          <button type="submit" disabled>로그인</button>
+        </form>
+      </section>
+    </div>
+    <div class="actions">
+      <button id="google" type="button" disabled>Google로 계속하기</button>
+      <button id="logout" type="button" disabled>로그아웃</button>
+    </div>
+    <p id="question-count" aria-live="polite">지금까지 질문 0개</p>
+    <section id="consultation">
+      <h2>상담</h2>
+      <form id="question-form">
+        <label>질문<input id="question-text" name="text" required disabled></label>
+        <button type="submit" disabled>보내기</button>
+      </form>
+      <p id="question-status" role="status">로그인 후 상담할 수 있습니다.</p>
+      <ol id="question-list" aria-live="polite"></ol>
+    </section>
+  </main>
+  <script type="module">
+    const status = document.querySelector('#status');
+    const userLabel = document.querySelector('#user');
+    const buttons = document.querySelectorAll('.forms button, .actions button');
+    let busy = false;
+    let auth;
+
+    function message(text, error = false) {
+      status.textContent = text;
+      status.dataset.error = String(error);
+    }
+    function showError(error) {
+      message(error.code || error.message || '알 수 없는 오류', true);
+    }
+    function render(user, name) {
+      userLabel.textContent = user
+        ? `${name || user.displayName || '사용자'}님 · UID ${user.uid.slice(0, 6)}`
+        : '로그인해 주세요.';
+    }
+    function enableButtons() {
+      buttons.forEach(button => { button.disabled = busy; });
+      document.querySelector('#logout').disabled = busy || !auth?.currentUser;
+    }
+
+    try {
+      const [{ initializeApp }, authSdk, firestoreSdk] = await Promise.all([
+        import('https://www.gstatic.com/firebasejs/13.1.0/firebase-app.js'),
+        import('https://www.gstatic.com/firebasejs/13.1.0/firebase-auth.js'),
+        import('https://www.gstatic.com/firebasejs/13.1.0/firebase-firestore.js')
+      ]);
+      const firebaseConfig = {
+        apiKey: "AIzaSyDivceMKnXFGezeldI12BgmNlPCDz-1Km8",
+        authDomain: "haru-help-6a694.firebaseapp.com",
+        projectId: "haru-help-6a694",
+        storageBucket: "haru-help-6a694.firebasestorage.app",
+        messagingSenderId: "336805464042",
+        appId: "1:336805464042:web:6477ceb6708af60ffc5493"
+      };
+      const app = initializeApp(firebaseConfig);
+      const { getAuth, connectAuthEmulator, createUserWithEmailAndPassword,
+        signInWithEmailAndPassword, updateProfile, GoogleAuthProvider,
+        signInWithPopup, signOut, onAuthStateChanged } = authSdk;
+      const { getFirestore, connectFirestoreEmulator, doc, runTransaction,
+        collection, addDoc, serverTimestamp, query, where, orderBy, onSnapshot } = firestoreSdk;
+      auth = getAuth(app);
+      const db = getFirestore(app);
+      if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
+        connectAuthEmulator(auth, 'http://127.0.0.1:9099');
+        connectFirestoreEmulator(db, '127.0.0.1', 8080);
+      }
+
+      const questionForm = document.querySelector('#question-form');
+      const questionInput = document.querySelector('#question-text');
+      const questionButton = questionForm.querySelector('button');
+      const questionStatus = document.querySelector('#question-status');
+      const questionList = document.querySelector('#question-list');
+      const questionCount = document.querySelector('#question-count');
+      let unsubscribeQuestions;
+      let sendingQuestion = false;
+      const feedbackSent = new Set();
+
+      function questionMessage(text, error = false) {
+        questionStatus.textContent = text;
+        questionStatus.dataset.error = String(error);
+      }
+
+      onAuthStateChanged(auth, user => {
+        unsubscribeQuestions?.();
+        questionList.replaceChildren();
+        questionCount.textContent = '지금까지 질문 0개';
+        questionInput.value = '';
+        questionInput.disabled = !user;
+        questionButton.disabled = !user || sendingQuestion;
+        questionMessage(user ? '질문을 불러오는 중…' : '로그인 후 상담할 수 있습니다.');
+        if (!user) return;
+
+        const ownQuestions = query(collection(db, 'questions'),
+          where('uid', '==', user.uid), orderBy('createdAt'));
+        unsubscribeQuestions = onSnapshot(ownQuestions, snapshot => {
+          if (auth.currentUser?.uid !== user.uid) return;
+          questionList.replaceChildren();
+          snapshot.forEach(question => {
+            const data = question.data();
+            const item = document.createElement('li');
+            const text = document.createElement('p');
+            const answer = document.createElement('p');
+            text.textContent = `질문: ${data.text || ''}`;
+            answer.textContent = data.status === 'waiting'
+              ? '답을 찾는 중입니다…'
+              : data.status === 'failed'
+                ? '답을 만들지 못했습니다. 잠시 뒤 다시 물어봐 주세요.'
+                : `답변: ${data.answer || ''}`;
+            answer.dataset.error = String(data.status === 'failed');
+            item.append(text, answer);
+            if (data.status === 'answered' && data.answer) {
+              const feedback = document.createElement('div');
+              feedback.className = 'actions';
+              const thanks = document.createElement('span');
+              thanks.setAttribute('role', 'status');
+              const feedbackKey = `${user.uid}/${question.id}`;
+              const feedbackButtons = [];
+              for (const [value, label] of [['up', '좋아요'], ['down', '별로예요']]) {
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.textContent = label;
+                button.disabled = feedbackSent.has(feedbackKey);
+                button.addEventListener('click', () => {
+                  if (feedbackSent.has(feedbackKey)) return;
+                  feedbackSent.add(feedbackKey);
+                  feedbackButtons.forEach(control => { control.disabled = true; });
+                  thanks.textContent = '고맙습니다';
+                  window.gtag('event', 'answer_feedback', {
+                    feedback: value,
+                    tool: Array.isArray(data.tools) && data.tools[0] ? data.tools[0] : 'none',
+                    question_id: question.id
+                  });
+                });
+                feedbackButtons.push(button);
+                feedback.append(button);
+              }
+              thanks.textContent = feedbackSent.has(feedbackKey) ? '고맙습니다' : '';
+              feedback.append(thanks);
+              item.append(feedback);
+            }
+            if (Array.isArray(data.tools)) {
+              const tools = document.createElement('small');
+              tools.textContent = `쓴 도구: ${data.tools.join(', ')}`;
+              item.append(tools);
+            }
+            questionList.append(item);
+          });
+          questionCount.textContent = `지금까지 질문 ${questionList.childElementCount}개`;
+          questionMessage(snapshot.empty ? '아직 질문이 없습니다.' : '');
+        }, error => {
+          if (auth.currentUser?.uid === user.uid) {
+            questionMessage(`질문을 불러오지 못했습니다: ${error.message}`, true);
+          }
+        });
+      });
+
+      questionForm.addEventListener('submit', async event => {
+        event.preventDefault();
+        const user = auth.currentUser;
+        const text = questionInput.value.trim();
+        if (!user || sendingQuestion) return;
+        if (!text) {
+          questionMessage('질문을 입력해 주세요.', true);
+          return;
+        }
+        sendingQuestion = true;
+        questionButton.disabled = true;
+        questionMessage('질문을 보내는 중…');
+        try {
+          await addDoc(collection(db, 'questions'), {
+            uid: user.uid,
+            text,
+            status: 'waiting',
+            createdAt: serverTimestamp()
+          });
+          if (auth.currentUser?.uid === user.uid) {
+            if (questionInput.value.trim() === text) questionInput.value = '';
+            questionMessage('질문을 보냈습니다.');
+          }
+        } catch (error) {
+          if (auth.currentUser?.uid === user.uid) {
+            questionMessage(`질문을 보내지 못했습니다: ${error.message}`, true);
+          }
+        } finally {
+          sendingQuestion = false;
+          questionButton.disabled = !auth.currentUser;
+        }
+      });
+
+      // 존재 확인과 생성을 한 트랜잭션에서 처리해 기존 문서를 덮어쓰지 않는다.
+      async function ensureUser(user, name = user.displayName || '') {
+        const ref = doc(db, 'users', user.uid);
+        return runTransaction(db, async transaction => {
+          const snapshot = await transaction.get(ref);
+          if (snapshot.exists()) return { name: snapshot.data().name, created: false };
+          transaction.set(ref, { name, role: 'customer' });
+          return { name, created: true };
+        });
+      }
+
+      async function perform(action) {
+        if (busy) return;
+        busy = true;
+        enableButtons();
+        message('처리 중…');
+        try {
+          await action();
+        } catch (error) {
+          render(auth.currentUser);
+          showError(error);
+        } finally {
+          document.querySelectorAll('input[type="password"]').forEach(input => { input.value = ''; });
+          busy = false;
+          enableButtons();
+        }
+      }
+
+      document.querySelector('#signup').addEventListener('submit', event => {
+        event.preventDefault();
+        const form = event.currentTarget;
+        const name = form.elements.name.value.trim();
+        if (!name) {
+          message('이름을 입력해 주세요.', true);
+          return;
+        }
+        void perform(async () => {
+          const { user } = await createUserWithEmailAndPassword(auth,
+            form.elements.email.value.trim(), form.elements.password.value);
+          await updateProfile(user, { displayName: name });
+          const profile = await ensureUser(user, name);
+          render(user, profile.name);
+          message(`이메일 가입 완료${profile.created ? ' · 사용자 문서 생성 완료' : ''}`);
+          form.reset();
+        });
+      });
+      document.querySelector('#login').addEventListener('submit', event => {
+        event.preventDefault();
+        const form = event.currentTarget;
+        void perform(async () => {
+          const { user } = await signInWithEmailAndPassword(auth,
+            form.elements.email.value.trim(), form.elements.password.value);
+          const profile = await ensureUser(user);
+          render(user, profile.name);
+          message(`이메일 로그인 완료${profile.created ? ' · 사용자 문서 생성 완료' : ''}`);
+          form.reset();
+        });
+      });
+      document.querySelector('#google').addEventListener('click', () => {
+        void perform(async () => {
+          const { user } = await signInWithPopup(auth, new GoogleAuthProvider());
+          const profile = await ensureUser(user);
+          render(user, user.displayName || profile.name);
+          message(`Google 로그인 완료${profile.created ? ' · 사용자 문서 생성 완료' : ''}`);
+        });
+      });
+      document.querySelector('#logout').addEventListener('click', () => {
+        void perform(async () => {
+          await signOut(auth);
+          render(null);
+          message('로그아웃 완료');
+        });
+      });
+      onAuthStateChanged(auth, async user => {
+        // 가입 중에는 이름 저장이 끝난 뒤 가입 처리에서 문서를 만든다.
+        if (busy) return;
+        render(user);
+        enableButtons();
+        if (!user) {
+          message('로그인할 수 있습니다.');
+          return;
+        }
+        try {
+          const profile = await ensureUser(user);
+          if (auth.currentUser?.uid !== user.uid || busy) return;
+          const googleUser = user.providerData.some(provider => provider.providerId === 'google.com');
+          render(user, googleUser ? user.displayName || profile.name : profile.name);
+          message(`로그인 상태 복원 완료${profile.created ? ' · 사용자 문서 생성 완료' : ''}`);
+        } catch (error) {
+          if (auth.currentUser?.uid === user.uid && !busy) showError(error);
+        }
+      }, showError);
+    } catch (error) {
+      showError(error);
+    }
+  </script>
+</body>
+</html>

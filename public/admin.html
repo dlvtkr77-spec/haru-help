@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>하루 도움 · 상담 관리</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #f3f6f4; color: #203b30; font-family: system-ui, sans-serif; }
+    main { max-width: 960px; margin: 40px auto; padding: 24px; }
+    section { margin-bottom: 20px; padding: 24px; border: 1px solid #dce5df; border-radius: 16px; background: white; }
+    h1 { font-size: 28px; }
+    label { display: block; margin-bottom: 16px; }
+    input { display: block; width: 100%; margin-top: 8px; padding: 12px; border: 1px solid #aebfb5; border-radius: 8px; font: inherit; }
+    button { padding: 12px 18px; border: 0; border-radius: 8px; background: #24674c; color: white; font: inherit; cursor: pointer; }
+    button:disabled { opacity: .5; cursor: default; }
+    #errors { color: #b32525; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 12px; border-bottom: 1px solid #dce5df; text-align: left; vertical-align: top; white-space: pre-wrap; overflow-wrap: anywhere; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>상담 관리</h1>
+    <section>
+      <form id="login">
+        <label>이메일<input name="email" type="email" autocomplete="email" required></label>
+        <label>비밀번호<input name="password" type="password" autocomplete="current-password" required></label>
+        <button id="login-button" type="submit" disabled>로그인</button>
+      </form>
+      <button id="google-login" type="button" disabled>Google로 로그인</button>
+      <button id="grant-staff" type="button" disabled>담당자 권한 받기</button>
+      <button id="build-kb" type="button" disabled>안내문 넣기</button>
+      <p id="staff-status" role="status"></p>
+      <p id="kb-status" role="status"></p>
+      <p id="auth-status" role="status">Firebase 연결 중…</p>
+      <button id="notifications" type="button">알림 켜기</button>
+      <p id="notification-status" role="status"></p>
+      <p id="errors" role="alert"></p>
+    </section>
+    <section>
+      <h2>안내문 올리기</h2>
+      <form id="upload-kb">
+        <label>안내문 파일 (.txt)<input id="kb-file" type="file" accept=".txt" required></label>
+        <button id="upload-kb-button" type="submit" disabled>안내문 올리기</button>
+      </form>
+      <p id="upload-kb-status" role="status"></p>
+    </section>
+    <section>
+      <p id="ticket-status" role="status">로그인해 주세요.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th scope="col">질문</th><th scope="col">넘긴 이유</th><th scope="col">상태</th></tr></thead>
+          <tbody id="tickets"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+  <script type="module">
+    const errors = document.querySelector('#errors');
+    const loginButton = document.querySelector('#login-button');
+    const googleLoginButton = document.querySelector('#google-login');
+    const grantStaffButton = document.querySelector('#grant-staff');
+    const buildKbButton = document.querySelector('#build-kb');
+    const uploadKbButton = document.querySelector('#upload-kb-button');
+    const uploadKbStatus = document.querySelector('#upload-kb-status');
+    let uploadingKb = false;
+    const authStatus = document.querySelector('#auth-status');
+    const ticketStatus = document.querySelector('#ticket-status');
+    const ticketBody = document.querySelector('#tickets');
+    function showError(error) {
+      const code = error.code ?? error.name ?? error.message ?? String(error);
+      errors.textContent += `${errors.textContent ? '\n' : ''}${code}`;
+    }
+
+    document.querySelector('#notifications').addEventListener('click', async () => {
+      try {
+        const permission = await Notification.requestPermission();
+        document.querySelector('#notification-status').textContent = permission;
+      } catch (error) {
+        showError(error);
+      }
+    });
+
+    try {
+      const [{ initializeApp }, authSdk, firestoreSdk, functionsSdk, storageSdk] = await Promise.all([
+        import('https://www.gstatic.com/firebasejs/13.1.0/firebase-app.js'),
+        import('https://www.gstatic.com/firebasejs/13.1.0/firebase-auth.js'),
+        import('https://www.gstatic.com/firebasejs/13.1.0/firebase-firestore.js'),
+        import('https://www.gstatic.com/firebasejs/13.1.0/firebase-functions.js'),
+        import('https://www.gstatic.com/firebasejs/13.1.0/firebase-storage.js')
+      ]);
+      const firebaseConfig = {
+        apiKey: "AIzaSyDivceMKnXFGezeldI12BgmNlPCDz-1Km8",
+        authDomain: "haru-help-6a694.firebaseapp.com",
+        projectId: "haru-help-6a694",
+        storageBucket: "haru-help-6a694.firebasestorage.app",
+        messagingSenderId: "336805464042",
+        appId: "1:336805464042:web:6477ceb6708af60ffc5493"
+      };
+      const app = initializeApp(firebaseConfig);
+      const { getAuth, connectAuthEmulator, signInWithEmailAndPassword, signInWithPopup, GoogleAuthProvider, onAuthStateChanged } = authSdk;
+      const { getFirestore, connectFirestoreEmulator, collection, query, orderBy, onSnapshot } = firestoreSdk;
+      const { getFunctions, connectFunctionsEmulator, httpsCallable } = functionsSdk;
+      const { getStorage, ref, uploadBytes } = storageSdk;
+      const auth = getAuth(app);
+      const db = getFirestore(app);
+      const storage = getStorage(app);
+      const functions = getFunctions(app, 'us-central1');
+      const grantStaff = httpsCallable(functions, 'grantStaff');
+      const buildKb = httpsCallable(functions, 'buildKb');
+      if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
+        connectAuthEmulator(auth, 'http://127.0.0.1:9099');
+        connectFirestoreEmulator(db, '127.0.0.1', 8080);
+        connectFunctionsEmulator(functions, '127.0.0.1', 5001);
+      }
+
+      loginButton.disabled = false;
+      googleLoginButton.disabled = false;
+      googleLoginButton.addEventListener('click', async () => {
+        googleLoginButton.disabled = true;
+        try {
+          await signInWithPopup(auth, new GoogleAuthProvider());
+        } catch (error) {
+          showError(error);
+        } finally {
+          googleLoginButton.disabled = false;
+        }
+      });
+      grantStaffButton.addEventListener('click', async () => {
+        const user = auth.currentUser;
+        if (!user) return;
+        grantStaffButton.disabled = true;
+        document.querySelector('#staff-status').textContent = '';
+        try {
+          await grantStaff();
+          await user.getIdToken(true);
+          if (auth.currentUser?.uid !== user.uid) return;
+          loadTickets(user);
+          document.querySelector('#staff-status').textContent = '담당자 권한을 받았습니다.';
+        } catch (error) {
+          showError(error);
+        } finally {
+          grantStaffButton.disabled = !auth.currentUser;
+        }
+      });
+      buildKbButton.addEventListener('click', async () => {
+        buildKbButton.disabled = true;
+        document.querySelector('#kb-status').textContent = '';
+        try {
+          const result = await buildKb();
+          document.querySelector('#kb-status').textContent = `saved: ${result.data.saved}`;
+        } catch (error) {
+          showError(error);
+        } finally {
+          buildKbButton.disabled = !auth.currentUser;
+        }
+      });
+      document.querySelector('#upload-kb').addEventListener('submit', async event => {
+        event.preventDefault();
+        if (uploadingKb) return;
+        uploadKbStatus.textContent = '';
+        try {
+          const file = document.querySelector('#kb-file').files[0];
+          if (!file || !/\.txt$/i.test(file.name)) {
+            throw { code: 'storage/invalid-argument' };
+          }
+          uploadingKb = true;
+          uploadKbButton.disabled = true;
+          await uploadBytes(ref(storage, `kb-files/${file.name}`), file, { contentType: 'text/plain' });
+          uploadKbStatus.textContent = `올린 파일: ${file.name}`;
+        } catch (error) {
+          showError(error);
+        } finally {
+          uploadingKb = false;
+          uploadKbButton.disabled = !auth.currentUser;
+        }
+      });
+      document.querySelector('#login').addEventListener('submit', async event => {
+        event.preventDefault();
+        const form = event.currentTarget;
+        loginButton.disabled = true;
+        try {
+          await signInWithEmailAndPassword(auth, form.elements.email.value.trim(), form.elements.password.value);
+        } catch (error) {
+          showError(error);
+        } finally {
+          form.elements.password.value = '';
+          loginButton.disabled = false;
+        }
+      });
+
+      let unsubscribe;
+      function loadTickets(user) {
+        unsubscribe?.();
+        ticketBody.replaceChildren();
+        authStatus.textContent = user ? `${user.email || user.uid} · 로그인 중` : '로그인해 주세요.';
+        ticketStatus.textContent = user ? '티켓을 불러오는 중…' : '로그인해 주세요.';
+        if (!user) return;
+        let initial = true;
+        const seen = new Set();
+        unsubscribe = onSnapshot(query(collection(db, 'tickets'), orderBy('createdAt', 'desc')), snapshot => {
+          if (auth.currentUser?.uid !== user.uid) return;
+          ticketBody.replaceChildren();
+          snapshot.forEach(doc => {
+            const data = doc.data();
+            const row = document.createElement('tr');
+            for (const value of [data.question, data.reason, data.status]) {
+              const cell = document.createElement('td');
+              cell.textContent = value ?? '';
+              row.append(cell);
+            }
+            ticketBody.append(row);
+          });
+          for (const change of snapshot.docChanges()) {
+            if (change.type !== 'added' || seen.has(change.doc.id)) continue;
+            if (!initial && 'Notification' in window && Notification.permission === 'granted') {
+              try {
+                const notification = new Notification('새 상담 티켓', { body: change.doc.data().question || '' });
+                notification.onerror = showError;
+              } catch (error) {
+                showError(error);
+              }
+            }
+          }
+          snapshot.forEach(doc => seen.add(doc.id));
+          initial = false;
+          ticketStatus.textContent = snapshot.empty ? '티켓이 없습니다.' : '';
+        }, showError);
+      }
+      onAuthStateChanged(auth, user => {
+        grantStaffButton.disabled = !user;
+        buildKbButton.disabled = !user;
+        uploadKbButton.disabled = !user || uploadingKb;
+        document.querySelector('#staff-status').textContent = '';
+        document.querySelector('#kb-status').textContent = '';
+        loadTickets(user);
+      }, showError);
+    } catch (error) {
+      showError(error);
+    }
+  </script>
+</body>
+</html>
