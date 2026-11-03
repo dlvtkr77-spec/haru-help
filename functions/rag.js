@@ -51,7 +51,7 @@ exports.buildKb = onCall({ secrets: [geminiKey] }, async (req) => {
     throw new HttpsError("permission-denied", "담당자만 안내문을 넣습니다");
   }
   const docs = JSON.parse(fs.readFileSync(path.join(__dirname, "kb-haru.json"), "utf8"));
-  const vectors = await embed(docs.map((d) => `title: ${d.title} | text: ${d.text}`));
+  const vectors = await embed(docs.map((d) => d.title));
   const batch = getFirestore().batch();
   docs.forEach((d, i) => {
     batch.set(getFirestore().collection("kb").doc(d.id), {
